@@ -41,16 +41,17 @@ async function isLockStale(lockPath: string): Promise<boolean> {
  * Acquires an exclusive file lock for token refresh operations.
  * Uses O_CREAT | O_EXCL for atomic creation.
  *
+ * @param timeoutMs - Maximum time to wait for lock acquisition (default: 30s)
  * @returns LockHandle if lock acquired, null if timeout
  */
-export async function acquireLock(): Promise<LockHandle | null> {
+export async function acquireLock(timeoutMs: number = LOCK_TIMEOUT_MS): Promise<LockHandle | null> {
   const lockPath = getLockFilePath();
   const startTime = Date.now();
 
   await ensureLockDirectory();
   debug('attempting to acquire lock at %s', lockPath);
 
-  while (Date.now() - startTime < LOCK_TIMEOUT_MS) {
+  while (Date.now() - startTime < timeoutMs) {
     try {
       const handle = await open(lockPath, 'wx');
       debug('lock acquired');
@@ -103,11 +104,15 @@ export async function releaseLock(lockHandle: LockHandle): Promise<void> {
  * Ensures the lock is released even if the operation throws.
  *
  * @param operation - The async operation to execute
+ * @param timeoutMs - Maximum time to wait for lock acquisition (default: 30s)
  * @returns The result of the operation
  * @throws Error if lock cannot be acquired or operation fails
  */
-export async function withLock<T>(operation: () => Promise<T>): Promise<T> {
-  const handle = await acquireLock();
+export async function withLock<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number = LOCK_TIMEOUT_MS,
+): Promise<T> {
+  const handle = await acquireLock(timeoutMs);
   if (handle === null) {
     throw new Error('Failed to acquire token refresh lock');
   }

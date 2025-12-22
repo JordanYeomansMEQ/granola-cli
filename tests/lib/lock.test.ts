@@ -62,6 +62,28 @@ describe('lock', () => {
       expect(lockHandle2).not.toBeNull();
       await releaseLock(lockHandle2!);
     });
+
+    it('should return null when timeout expires', async () => {
+      const lockHandle1 = await acquireLock();
+      expect(lockHandle1).not.toBeNull();
+
+      // Try to acquire with very short timeout while lock is held
+      const lockHandle2 = await acquireLock(200);
+      expect(lockHandle2).toBeNull();
+
+      await releaseLock(lockHandle1!);
+    });
+
+    it('should handle errors during release gracefully', async () => {
+      const lockHandle = await acquireLock();
+      expect(lockHandle).not.toBeNull();
+
+      // Delete the lock file before release - unlink will fail
+      await rm(getLockFilePath(), { force: true });
+
+      // Should not throw, just log the error
+      await expect(releaseLock(lockHandle!)).resolves.toBeUndefined();
+    });
   });
 
   describe('withLock', () => {
@@ -122,6 +144,17 @@ describe('lock', () => {
       expect(result2).toBe('second');
       // Operations should not interleave - first completes before second starts
       expect(order).toEqual([1, 2, 3, 4]);
+    });
+
+    it('should throw when lock cannot be acquired within timeout', async () => {
+      const lockHandle = await acquireLock();
+      expect(lockHandle).not.toBeNull();
+
+      await expect(withLock(async () => 'x', 200)).rejects.toThrow(
+        'Failed to acquire token refresh lock',
+      );
+
+      await releaseLock(lockHandle!);
     });
   });
 
