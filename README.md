@@ -124,11 +124,23 @@ granola meeting list [options]
 |--------|-------------|
 | `-l, --limit <n>` | Number of meetings to show (default: 20) |
 | `-w, --workspace <id>` | Filter by workspace ID |
-| `-f, --folder <id>` | Filter by folder ID (requires folder support; the CLI warns if folders are unavailable) |
+| `-f, --folder <id>` | Filter by folder ID |
+| `-s, --search <query>` | Search in meeting titles (case-insensitive) |
+| `-a, --attendee <name>` | Filter by attendee name or email (partial match) |
+| `-d, --date <date>` | Filter meetings on a specific date |
+| `--since <date>` | Filter meetings from date (inclusive) |
+| `--until <date>` | Filter meetings up to date (inclusive) |
 
-**Example:**
+**Date formats supported:**
+- Keywords: `today`, `yesterday`, `tomorrow`
+- Relative: `3 days ago`, `2 weeks ago`, `last week`, `last month`
+- ISO: `2024-12-20`, `2024/12/20`
+- Simple: `Dec 20`, `Dec 20 2024`, `20 Dec`
+
+**Examples:**
 
 ```bash
+# Basic listing
 $ granola meeting list --limit 5
 
 Showing 5 meetings
@@ -137,6 +149,24 @@ ID          TITLE                           DATE
 a1b2c3d4    Q4 Planning Session             Dec 18, 2025
 e5f6g7h8    1:1 with Sarah                  Dec 18, 2025
 i9j0k1l2    Sprint Retrospective            Dec 17, 2025
+
+# Search by title
+$ granola meeting list --search "planning"
+
+# Filter by attendee
+$ granola meeting list --attendee john
+
+# Filter by date
+$ granola meeting list --date today
+$ granola meeting list --date yesterday
+$ granola meeting list --date "Dec 20"
+
+# Filter by date range
+$ granola meeting list --since "last week"
+$ granola meeting list --since 2024-12-01 --until 2024-12-15
+
+# Combine filters
+$ granola meeting list --search standup --attendee john --since yesterday
 ```
 
 #### View meeting details
@@ -607,7 +637,19 @@ DEBUG=granola:cli:* granola meetings
 
 ```bash
 # See today's meetings
-granola meeting list --limit 5
+granola meeting list --date today
+
+# See yesterday's meetings
+granola meeting list --date yesterday
+
+# Find meetings from last week
+granola meeting list --since "last week"
+
+# Find all standups
+granola meeting list --search standup
+
+# Find meetings with a specific person
+granola meeting list --attendee "sarah"
 
 # Review AI-enhanced summary from a meeting
 granola meeting enhanced a1b2c3d4
@@ -643,8 +685,16 @@ for id in $(granola meeting list --workspace abc12345 --output json | jq -r '.[]
   granola meeting export "$id" > "meetings/${id}.json"
 done
 
-# Find meetings mentioning a keyword
-granola meeting list --output json | jq '.[] | select(.title | test("planning"; "i"))'
+# Export all meetings from last month
+for id in $(granola meeting list --since "last month" --output json | jq -r '.[].id'); do
+  granola meeting export "$id" > "meetings/${id}.json"
+done
+
+# Find meetings with title search (built-in)
+granola meeting list --search "planning"
+
+# Find meetings with a specific attendee
+granola meeting list --attendee "john.smith@example.com" --output json
 ```
 
 ### Integration with Other Tools
@@ -724,7 +774,9 @@ granola-cli/
 │       ├── api.ts           # Granola API client
 │       ├── auth.ts          # Credential management
 │       ├── config.ts        # Configuration management
+│       ├── date-parser.ts   # Natural date parsing
 │       ├── debug.ts         # Debug logging utilities
+│       ├── filters.ts       # Meeting filter utilities
 │       ├── http.ts          # HTTP client with retry
 │       ├── output.ts        # Table formatting
 │       ├── pager.ts         # Pager integration

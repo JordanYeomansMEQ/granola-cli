@@ -1,11 +1,12 @@
 import type { GranolaApi } from '../lib/api.js';
 import { createGranolaDebug } from '../lib/debug.js';
+import { applyFilters, type FilterOptions, hasActiveFilters } from '../lib/filters.js';
 import type { Meeting, ProseMirrorDoc, Utterance } from '../types.js';
 import { getClient, withTokenRefresh } from './client.js';
 
 const debug = createGranolaDebug('service:meetings');
 
-export interface ListOptions {
+export interface ListOptions extends FilterOptions {
   limit?: number;
   offset?: number;
   workspace?: string;
@@ -75,7 +76,7 @@ export async function list(opts: ListOptions = {}): Promise<Meeting[]> {
   return withTokenRefresh(async () => {
     debug('list called with opts: %O', opts);
     const client = await getClient();
-    const { limit = 20, offset = 0, workspace, folder } = opts;
+    const { limit = 20, offset = 0, workspace, folder, ...filterOpts } = opts;
 
     if (folder) {
       debug('listing meetings for folder: %s', folder);
@@ -92,11 +93,34 @@ export async function list(opts: ListOptions = {}): Promise<Meeting[]> {
         );
       }
 
+      // Apply additional filters if any
+      filtered = applyFilters(filtered, filterOpts);
+
       const paginated = filtered.slice(offset, offset + limit);
       debug('returning %d meetings from folder %s after pagination', paginated.length, folder);
       return paginated;
     }
 
+    // When filters are active, fetch more meetings to filter from
+    if (hasActiveFilters(filterOpts)) {
+      debug('filters active, using cached meetings for filtering');
+      let meetings = await getCachedMeetings(client);
+
+      if (workspace) {
+        meetings = meetings.filter((m) => m.workspace_id === workspace);
+        debug('filtered to %d meetings for workspace: %s', meetings.length, workspace);
+      }
+
+      // Apply search/attendee/date filters
+      meetings = applyFilters(meetings, filterOpts);
+
+      // Apply pagination to filtered results
+      const paginated = meetings.slice(offset, offset + limit);
+      debug('returning %d meetings after filtering and pagination', paginated.length);
+      return paginated;
+    }
+
+    // No filters active - use standard pagination from API
     const res = await client.getDocuments({
       limit,
       offset,

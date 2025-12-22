@@ -92,6 +92,8 @@ src/
     ├── api.ts             # Granola API client wrapper
     ├── auth.ts            # Keychain credential management
     ├── config.ts          # User preferences (via conf)
+    ├── date-parser.ts     # Natural language date parsing
+    ├── filters.ts         # Meeting filter utilities
     ├── http.ts            # HTTP client with retry logic
     ├── lock.ts            # File-based locking for token refresh
     ├── output.ts          # Table formatting utilities
@@ -113,6 +115,11 @@ granola [--no-pager]
 │   │   [--limit <n>]
 │   │   [--workspace <id>]
 │   │   [--folder <id>]
+│   │   [--search <query>]     # Title search
+│   │   [--attendee <name>]    # Attendee filter
+│   │   [--date <date>]        # Specific date
+│   │   [--since <date>]       # From date
+│   │   [--until <date>]       # Until date
 │   ├── view <id>          # View meeting details
 │   ├── notes <id>         # View manual notes (user-written)
 │   ├── enhanced <id>      # View AI-enhanced notes
@@ -290,6 +297,20 @@ Each command follows a consistent pattern:
 - Optional timestamp display
 - Speaker labeling (You vs Participant)
 - Clean text output
+
+**`lib/date-parser.ts`** - Natural Date Parsing
+- Zero external dependencies
+- Parses keywords: `today`, `yesterday`, `tomorrow`
+- Parses relative: `N days ago`, `last week`, `last month`
+- Parses ISO: `YYYY-MM-DD`, `YYYY/MM/DD`
+- Parses simple: `Dec 20`, `20 Dec 2024`
+
+**`lib/filters.ts`** - Meeting Filters
+- Title search (case-insensitive partial match)
+- Attendee filter (partial name/email match)
+- Date filter (specific date or range)
+- Combines multiple filters with AND logic
+- Used by meetings service for client-side filtering
 
 ## Type System
 

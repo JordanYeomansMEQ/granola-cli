@@ -12,7 +12,25 @@ vi.mock('../../../src/lib/config.js', () => ({
   getConfigValue: vi.fn(() => undefined),
 }));
 
+vi.mock('../../../src/lib/date-parser.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/lib/date-parser.js')>();
+  return {
+    ...actual,
+    validateDateOption: vi.fn((value: string, optionName: string) => {
+      // Return a fixed date for known test inputs
+      if (value === 'today') return new Date(2024, 11, 22, 0, 0, 0);
+      if (value === 'yesterday') return new Date(2024, 11, 21, 0, 0, 0);
+      if (value === 'last week') return new Date(2024, 11, 15, 0, 0, 0);
+      if (value === '2024-12-20') return new Date(2024, 11, 20, 0, 0, 0);
+      if (value === '2024-12-15') return new Date(2024, 11, 15, 0, 0, 0);
+      if (value === 'invalid') throw new Error(`Invalid date for ${optionName}: "invalid"`);
+      return actual.validateDateOption(value, optionName);
+    }),
+  };
+});
+
 import { getConfigValue } from '../../../src/lib/config.js';
+import { validateDateOption } from '../../../src/lib/date-parser.js';
 import * as meetings from '../../../src/services/meetings.js';
 
 describe('meeting list command', () => {
@@ -176,5 +194,172 @@ describe('meeting list command', () => {
     expect(console_.errors.some((e) => /invalid format/i.test(e))).toBe(true);
     expect(exit.exitCodes).toContain(1);
     exit.restore();
+  });
+
+  describe('filter options', () => {
+    it('should filter by search query', async () => {
+      vi.mocked(meetings.list).mockResolvedValue([mockMeetings[0]]);
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+      await program.parseAsync(['node', 'test', 'list', '--search', 'standup']);
+
+      expect(meetings.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          search: 'standup',
+        }),
+      );
+    });
+
+    it('should filter by attendee', async () => {
+      vi.mocked(meetings.list).mockResolvedValue([mockMeetings[0]]);
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+      await program.parseAsync(['node', 'test', 'list', '--attendee', 'john']);
+
+      expect(meetings.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attendee: 'john',
+        }),
+      );
+    });
+
+    it('should filter by date', async () => {
+      vi.mocked(meetings.list).mockResolvedValue([mockMeetings[0]]);
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+      await program.parseAsync(['node', 'test', 'list', '--date', 'today']);
+
+      expect(validateDateOption).toHaveBeenCalledWith('today', '--date');
+      expect(meetings.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          date: new Date(2024, 11, 22, 0, 0, 0),
+        }),
+      );
+    });
+
+    it('should filter by date range with --since and --until', async () => {
+      vi.mocked(meetings.list).mockResolvedValue([mockMeetings[0]]);
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+      await program.parseAsync([
+        'node',
+        'test',
+        'list',
+        '--since',
+        '2024-12-15',
+        '--until',
+        '2024-12-20',
+      ]);
+
+      expect(meetings.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          since: new Date(2024, 11, 15, 0, 0, 0),
+          until: new Date(2024, 11, 20, 0, 0, 0),
+        }),
+      );
+    });
+
+    it('should combine multiple filters', async () => {
+      vi.mocked(meetings.list).mockResolvedValue([mockMeetings[0]]);
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+      await program.parseAsync([
+        'node',
+        'test',
+        'list',
+        '--search',
+        'standup',
+        '--attendee',
+        'john',
+        '--since',
+        'yesterday',
+      ]);
+
+      expect(meetings.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          search: 'standup',
+          attendee: 'john',
+          since: new Date(2024, 11, 21, 0, 0, 0),
+        }),
+      );
+    });
+
+    it('should show error for invalid date', async () => {
+      const exit = mockProcessExit();
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+
+      try {
+        await program.parseAsync(['node', 'test', 'list', '--date', 'invalid']);
+      } catch {
+        // process.exit throws
+      }
+
+      expect(console_.errors.some((e) => /Invalid date/i.test(e))).toBe(true);
+      expect(exit.exitCodes).toContain(1);
+      exit.restore();
+    });
+
+    it('should show error when --since is after --until', async () => {
+      const exit = mockProcessExit();
+      // Mock so that 'today' > 'yesterday' for range validation
+      vi.mocked(validateDateOption).mockImplementation((value: string) => {
+        if (value === 'today') return new Date(2024, 11, 22);
+        if (value === 'yesterday') return new Date(2024, 11, 21);
+        throw new Error('Unknown date');
+      });
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+
+      try {
+        await program.parseAsync([
+          'node',
+          'test',
+          'list',
+          '--since',
+          'today',
+          '--until',
+          'yesterday',
+        ]);
+      } catch {
+        // process.exit throws
+      }
+
+      expect(console_.errors.some((e) => /--since date must be before --until/i.test(e))).toBe(
+        true,
+      );
+      expect(exit.exitCodes).toContain(1);
+      exit.restore();
+    });
+
+    it('should work with workspace filter and search', async () => {
+      vi.mocked(meetings.list).mockResolvedValue([mockMeetings[0]]);
+
+      const program = new Command();
+      program.addCommand(createListCommand());
+      await program.parseAsync([
+        'node',
+        'test',
+        'list',
+        '--workspace',
+        'ws123',
+        '--search',
+        'planning',
+      ]);
+
+      expect(meetings.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspace: 'ws123',
+          search: 'planning',
+        }),
+      );
+    });
   });
 });

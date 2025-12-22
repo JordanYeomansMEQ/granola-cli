@@ -154,13 +154,22 @@ function resetClient(): void
 Meeting operations.
 
 ```typescript
-interface ListOptions {
+interface FilterOptions {
+  search?: string;    // Case-insensitive title search
+  attendee?: string;  // Partial match on attendee name or email
+  date?: Date;        // Filter to specific date
+  since?: Date;       // Filter from date (inclusive)
+  until?: Date;       // Filter up to date (inclusive)
+}
+
+interface ListOptions extends FilterOptions {
   limit?: number;
+  offset?: number;
   workspace?: string;
   folder?: string;
 }
 
-// List meetings
+// List meetings (with optional filtering)
 async function list(options?: ListOptions): Promise<Meeting[]>
 
 // Resolve partial meeting ID to full ID (prefix matching)
@@ -308,6 +317,52 @@ interface FormatOptions {
 
 // Format transcript as readable text
 function formatTranscript(utterances: Utterance[], options?: FormatOptions): string
+```
+
+### date-parser.ts
+
+Natural language date parsing (zero dependencies).
+
+```typescript
+// Parse natural date string to Date object
+// Supports: today, yesterday, tomorrow, last week, last month,
+// N days/weeks/months ago, YYYY-MM-DD, Dec 20, 20 Dec 2024
+function parseDate(input: string): Date | null
+
+// Parse and validate date for CLI option, throws on invalid
+function validateDateOption(value: string, optionName: string): Date
+```
+
+### filters.ts
+
+Meeting filter utilities.
+
+```typescript
+interface FilterOptions {
+  search?: string;
+  attendee?: string;
+  date?: Date;
+  since?: Date;
+  until?: Date;
+}
+
+// Case-insensitive partial match on meeting title
+function matchesSearch(meeting: Meeting, query: string): boolean
+
+// Partial match on attendee name or email (case-insensitive)
+function matchesAttendee(meeting: Meeting, query: string): boolean
+
+// Check if meeting falls on specific date
+function matchesDate(meeting: Meeting, date: Date): boolean
+
+// Check if meeting is within date range (inclusive)
+function matchesDateRange(meeting: Meeting, since?: Date, until?: Date): boolean
+
+// Check if any filters are active
+function hasActiveFilters(options: FilterOptions): boolean
+
+// Apply all filters to meeting list (AND logic)
+function applyFilters(meetings: Meeting[], options: FilterOptions): Meeting[]
 ```
 
 ## Command Factory Functions
