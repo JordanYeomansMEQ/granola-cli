@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { deletePassword, getPassword, setPassword } from 'cross-keychain';
 import type { Credentials } from '../types.js';
 import { createGranolaDebug } from './debug.js';
+import { withLock } from './lock.js';
 
 const debug = createGranolaDebug('lib:auth');
 
@@ -52,43 +53,49 @@ const WORKOS_AUTH_URL = 'https://api.workos.com/user_management/authenticate';
  * WorkOS refresh tokens are single-use - each refresh returns a new refresh token
  * that must be saved immediately.
  *
+ * Uses a file-based lock to prevent race conditions when multiple CLI processes
+ * attempt to refresh the token simultaneously.
+ *
  * @returns New credentials if refresh succeeds, null otherwise
  */
 export async function refreshAccessToken(): Promise<Credentials | null> {
   debug('attempting token refresh');
 
-  const creds = await getCredentials();
-  if (!creds?.refreshToken || !creds?.clientId) {
-    debug('cannot refresh: missing refreshToken or clientId');
-    return null;
-  }
-
   try {
-    const response = await fetch(WORKOS_AUTH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_id: creds.clientId,
-        grant_type: 'refresh_token',
-        refresh_token: creds.refreshToken,
-      }),
+    return await withLock(async () => {
+      // Re-read credentials inside the lock - another process may have updated them
+      const creds = await getCredentials();
+      if (!creds?.refreshToken || !creds?.clientId) {
+        debug('cannot refresh: missing refreshToken or clientId');
+        return null;
+      }
+
+      const response = await fetch(WORKOS_AUTH_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: creds.clientId,
+          grant_type: 'refresh_token',
+          refresh_token: creds.refreshToken,
+        }),
+      });
+
+      if (!response.ok) {
+        debug('token refresh failed: %d %s', response.status, response.statusText);
+        return null;
+      }
+
+      const data = (await response.json()) as { refresh_token: string; access_token: string };
+      const newCreds: Credentials = {
+        refreshToken: data.refresh_token,
+        accessToken: data.access_token,
+        clientId: creds.clientId,
+      };
+
+      await saveCredentials(newCreds);
+      debug('token refresh successful, new credentials saved');
+      return newCreds;
     });
-
-    if (!response.ok) {
-      debug('token refresh failed: %d %s', response.status, response.statusText);
-      return null;
-    }
-
-    const data = (await response.json()) as { refresh_token: string; access_token: string };
-    const newCreds: Credentials = {
-      refreshToken: data.refresh_token,
-      accessToken: data.access_token,
-      clientId: creds.clientId,
-    };
-
-    await saveCredentials(newCreds);
-    debug('token refresh successful, new credentials saved');
-    return newCreds;
   } catch (error) {
     debug('token refresh error: %O', error);
     return null;

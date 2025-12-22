@@ -204,8 +204,15 @@ Meeting IDs displayed in `meeting list` are truncated to 8 characters for readab
 
 ```typescript
 export async function resolveId(partialId: string): Promise<string | null> {
-  const allMeetings = await list({ limit: 100 });
-  const matches = allMeetings.filter((m) => m.id.startsWith(partialId));
+  // Optimization: Direct lookup for full UUIDs (36+ chars)
+  if (partialId.length >= 36) {
+    const metadata = await client.getDocumentMetadata(partialId);
+    if (metadata) return partialId;
+  }
+
+  // Use cached meetings for prefix search
+  const meetings = await getCachedMeetings(client);
+  const matches = meetings.filter((m) => m.id.startsWith(partialId));
 
   if (matches.length === 0) return null;
   if (matches.length > 1) {
@@ -219,6 +226,11 @@ export async function resolveId(partialId: string): Promise<string | null> {
 - If exactly one meeting matches the prefix, returns the full UUID
 - If no matches found, returns `null` (command exits with code 4)
 - If multiple matches found, throws an error (user must provide more characters)
+
+**Performance Optimizations:**
+- **Direct lookup for full UUIDs**: When the ID is 36+ characters (full UUID), attempts a direct `getDocumentMetadata()` call first, avoiding expensive pagination
+- **In-memory caching**: Meetings list is cached for 60 seconds to reduce API calls when resolving multiple IDs in quick succession
+- **Cache invalidation**: `clearMeetingsCache()` is exported for testing or manual cache clearing
 
 **Used By:** `view`, `notes`, `enhanced`, `transcript`, `export` commands
 
@@ -850,11 +862,12 @@ npm run test:coverage
            │
 ┌──────────▼───────────┐       ┌─────────────────────┐
 │  Native API Client   │◄──────┤  Authentication     │
-│  (lib/http + api)    │       │  (lib/auth.ts)      │
+│  (lib/http + api)    │       │  (lib/auth + lock)  │
 │                      │       │                     │
 │  • HTTP with retry   │       │  • Keychain storage │
 │  • Granola API       │       │  • Token refresh    │
-└──────────────────────┘       └─────────────────────┘
+└──────────────────────┘       │  • File-based lock  │
+                               └─────────────────────┘
            │
 ┌──────────▼───────────┐
 │   Content Transform  │

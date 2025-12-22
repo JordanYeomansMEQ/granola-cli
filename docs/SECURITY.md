@@ -31,7 +31,7 @@ The CLI supports importing credentials from the Granola desktop application:
 
 The CLI automatically handles token expiration:
 
-**Location**: `lib/auth.ts`, `services/client.ts`
+**Location**: `lib/auth.ts`, `lib/lock.ts`, `services/client.ts`
 
 **How it works:**
 - `refreshAccessToken()` calls WorkOS API to refresh expired tokens
@@ -42,12 +42,32 @@ The CLI automatically handles token expiration:
 **Token Rotation Flow:**
 1. API call fails with 401 (Unauthorized)
 2. `withTokenRefresh` catches the error and calls `refreshAccessToken()`
-3. CLI sends refresh request to `https://api.workos.com/user_management/authenticate`
-4. WorkOS returns new `access_token` and rotated `refresh_token`
-5. New credentials are saved to keychain
-6. Original operation is retried with fresh token
+3. File-based lock is acquired to prevent race conditions (via `lib/lock.ts`)
+4. Credentials are re-read inside the lock (another process may have updated them)
+5. CLI sends refresh request to `https://api.workos.com/user_management/authenticate`
+6. WorkOS returns new `access_token` and rotated `refresh_token`
+7. New credentials are saved to keychain
+8. Lock is released
+9. Original operation is retried with fresh token
 
-**Important**: WorkOS refresh tokens are **single-use**. Each refresh invalidates the previous token and issues a new one. The CLI saves new tokens immediately to prevent token invalidation issues.
+**Important**: WorkOS refresh tokens are **single-use**. Each refresh invalidates the previous token and issues a new one. The CLI uses file-based locking to prevent race conditions when multiple CLI processes attempt to refresh the token simultaneously.
+
+### Race Condition Prevention
+
+**Location**: `lib/lock.ts`
+
+When multiple CLI processes run concurrently (e.g., in scripts), they may both encounter expired tokens and attempt to refresh simultaneously. Without protection, this causes a race condition:
+1. Process A reads refresh token T1
+2. Process B reads refresh token T1
+3. Process A refreshes and invalidates T1, gets T2
+4. Process B tries to refresh with T1 (now invalid) and fails
+
+The CLI prevents this using file-based locking:
+- Lock file: `~/Library/Caches/granola/granola-token-refresh.lock` (macOS) or system temp dir
+- Uses `O_CREAT | O_EXCL` for atomic lock acquisition
+- 30-second timeout waiting for lock
+- Stale lock cleanup after 60 seconds
+- Credentials are re-read inside the lock to use any updates from other processes
 
 ## Configuration Storage
 

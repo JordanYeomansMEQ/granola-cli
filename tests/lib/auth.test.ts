@@ -19,11 +19,15 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
 }));
 
+// Mock lock module to avoid file system operations in tests
+vi.mock('../../src/lib/lock.js', () => ({
+  withLock: vi.fn((operation: () => Promise<unknown>) => operation()),
+}));
+
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 // Import the mocked module to access mock functions
 import * as crossKeychain from 'cross-keychain';
-
 // Import auth module after mocking
 import {
   deleteCredentials,
@@ -34,6 +38,7 @@ import {
   refreshAccessToken,
   saveCredentials,
 } from '../../src/lib/auth.js';
+import { withLock } from '../../src/lib/lock.js';
 
 describe('auth', () => {
   beforeEach(() => {
@@ -529,6 +534,38 @@ describe('auth', () => {
 
       expect(result).toBeNull();
       expect(crossKeychain.setPassword).not.toHaveBeenCalled();
+    });
+
+    it('should use file lock to prevent race conditions', async () => {
+      const storedCreds = JSON.stringify({
+        refreshToken: 'old-refresh-token',
+        accessToken: 'old-access-token',
+        clientId: 'test-client-id',
+      });
+      vi.mocked(crossKeychain.getPassword).mockResolvedValue(storedCreds);
+      vi.mocked(crossKeychain.setPassword).mockResolvedValue(undefined);
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            access_token: 'new-access-token',
+            refresh_token: 'new-refresh-token',
+          }),
+      });
+
+      await refreshAccessToken();
+
+      expect(withLock).toHaveBeenCalledTimes(1);
+      expect(withLock).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    it('should return null when lock acquisition fails', async () => {
+      vi.mocked(withLock).mockRejectedValueOnce(new Error('Failed to acquire token refresh lock'));
+
+      const result = await refreshAccessToken();
+
+      expect(result).toBeNull();
     });
   });
 });

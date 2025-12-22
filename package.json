@@ -1,6 +1,6 @@
 {
   "name": "granola-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CLI for Granola meeting notes",
   "type": "module",
   "bin": {
@@ -57,5 +57,13 @@
     "notes",
     "cli"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magarcia/granola-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/magarcia/granola-cli/issues"
+  },
+  "homepage": "https://github.com/magarcia/granola-cli#readme"
 }

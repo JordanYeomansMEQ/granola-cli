@@ -1,6 +1,4 @@
-import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import { aliasCommand } from './commands/alias.js';
 import { authCommand } from './commands/auth/index.js';
@@ -14,7 +12,6 @@ import { createGranolaDebug } from './lib/debug.js';
 
 const debug = createGranolaDebug('cli');
 const debugAlias = createGranolaDebug('cli:alias');
-const debugSubcmd = createGranolaDebug('cli:subcommand');
 
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
 
@@ -36,87 +33,6 @@ program.addCommand(workspaceCommand);
 program.addCommand(folderCommand);
 program.addCommand(configCommand);
 program.addCommand(aliasCommand);
-
-/**
- * Discovers external subcommands matching the pattern `granola-*` in PATH.
- *
- * Works like git's external subcommand system - any executable named
- * `granola-<name>` becomes available as `granola <name>`.
- *
- * @returns Map of subcommand names to their executable paths
- */
-function discoverExternalSubcommands(): Map<string, string> {
-  const subcommands = new Map<string, string>();
-  const pathDirs = (process.env.PATH || '').split(delimiter);
-  debugSubcmd('scanning PATH directories: %d dirs', pathDirs.length);
-
-  for (const dir of pathDirs) {
-    if (!existsSync(dir)) continue;
-
-    try {
-      const entries = readdirSync(dir);
-      for (const entry of entries) {
-        if (!entry.startsWith('granola-')) continue;
-
-        const fullPath = join(dir, entry);
-        try {
-          const stat = statSync(fullPath);
-          // Check if it's executable (for Unix, check mode; for Windows, just existence)
-          if (stat.isFile()) {
-            const subcommandName = entry.replace(/^granola-/, '').replace(/\.(exe|cmd|bat)$/i, '');
-            if (!subcommands.has(subcommandName)) {
-              debugSubcmd('found external subcommand: %s at %s', subcommandName, fullPath);
-              subcommands.set(subcommandName, fullPath);
-            }
-          }
-        } catch {
-          // Skip files we can't stat
-        }
-      }
-    } catch {
-      // Skip directories we can't read
-    }
-  }
-
-  debugSubcmd('discovered %d external subcommands', subcommands.size);
-  return subcommands;
-}
-
-// Register external subcommands discovered in PATH
-const externalSubcommands = discoverExternalSubcommands();
-for (const [name, execPath] of externalSubcommands) {
-  // Skip if there's already a built-in command with this name
-  if (program.commands.some((cmd) => cmd.name() === name)) continue;
-
-  const externalCmd = new Command(name)
-    .description(`[external] ${name}`)
-    .allowUnknownOption()
-    .allowExcessArguments()
-    .action((...args) => {
-      // Get all arguments after the subcommand name
-      const cmdArgs = args.slice(0, -1) as string[];
-      debugSubcmd('executing external command: %s with args: %O', execPath, cmdArgs);
-
-      // Spawn the external command
-      const child = spawn(execPath, cmdArgs, {
-        stdio: 'inherit',
-        shell: process.platform === 'win32',
-      });
-
-      child.on('close', (code) => {
-        debugSubcmd('external command exited with code: %d', code);
-        process.exit(code ?? 0);
-      });
-
-      child.on('error', (err) => {
-        debugSubcmd('external command error: %O', err);
-        console.error(`Failed to run external command: ${err.message}`);
-        process.exit(1);
-      });
-    });
-
-  program.addCommand(externalCmd);
-}
 
 // Handle alias expansion
 function expandAlias(args: string[]): string[] {

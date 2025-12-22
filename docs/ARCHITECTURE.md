@@ -43,7 +43,7 @@ Granola CLI is an unofficial, community-built TypeScript CLI for Granola.ai - an
 │                  Libraries Layer                        │
 │  ┌────────┬────────┬────────┬────────┬─────────────┐   │
 │  │auth.ts │config.ts│output.ts│pager.ts│prosemirror.ts│ │
-│  │        │        │         │        │transcript.ts │ │
+│  │lock.ts │        │         │        │transcript.ts │ │
 │  └────────┴────────┴────────┴────────┴─────────────┘   │
 └─────────────────┬───────────────────────────────────────┘
                   │
@@ -93,6 +93,7 @@ src/
     ├── auth.ts            # Keychain credential management
     ├── config.ts          # User preferences (via conf)
     ├── http.ts            # HTTP client with retry logic
+    ├── lock.ts            # File-based locking for token refresh
     ├── output.ts          # Table formatting utilities
     ├── pager.ts           # Terminal pager integration
     ├── prosemirror.ts     # ProseMirror → Markdown conversion
@@ -249,6 +250,13 @@ Each command follows a consistent pattern:
 - Uses `cross-keychain` for secure OS-level storage
 - Parses Supabase OAuth JSON
 - Default client ID fallback
+- Token refresh with file-based locking (via `lock.ts`)
+
+**`lib/lock.ts`** - File-based Locking
+- Prevents race conditions during token refresh across CLI processes
+- Uses `O_CREAT | O_EXCL` for atomic lock acquisition
+- Automatic stale lock cleanup (60s timeout)
+- Lock location: `~/Library/Caches/granola/` (macOS) or system temp dir
 
 **`lib/config.ts`** - Configuration
 - Uses `conf` package for persistent storage

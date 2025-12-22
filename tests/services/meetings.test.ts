@@ -8,6 +8,7 @@ vi.mock('../../src/services/client.js', () => ({
 
 import { getClient } from '../../src/services/client.js';
 import {
+  clearMeetingsCache,
   get,
   getEnhancedNotes,
   getNotes,
@@ -26,6 +27,7 @@ import {
 describe('meetings service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearMeetingsCache();
   });
 
   describe('resolveId', () => {
@@ -106,6 +108,71 @@ describe('meetings service', () => {
         offset: 100,
         include_last_viewed_panel: false,
       });
+    });
+
+    it('should use direct lookup for full UUID (36+ chars)', async () => {
+      const fullUuid = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+      const mockClient = {
+        getDocumentMetadata: vi.fn().mockResolvedValue({ id: fullUuid, title: 'Meeting' }),
+        getDocuments: vi.fn(),
+      };
+      vi.mocked(getClient).mockResolvedValue(mockClient as never);
+
+      const result = await resolveId(fullUuid);
+
+      expect(result).toBe(fullUuid);
+      expect(mockClient.getDocumentMetadata).toHaveBeenCalledWith(fullUuid);
+      expect(mockClient.getDocuments).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to search when direct lookup fails', async () => {
+      const fullUuid = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+      const mockClient = {
+        getDocumentMetadata: vi.fn().mockRejectedValue(new Error('Not found')),
+        getDocuments: vi.fn().mockResolvedValue({
+          docs: [{ id: fullUuid, title: 'Meeting', created_at: '', updated_at: '' }],
+        }),
+      };
+      vi.mocked(getClient).mockResolvedValue(mockClient as never);
+
+      const result = await resolveId(fullUuid);
+
+      expect(result).toBe(fullUuid);
+      expect(mockClient.getDocumentMetadata).toHaveBeenCalledWith(fullUuid);
+      expect(mockClient.getDocuments).toHaveBeenCalled();
+    });
+
+    it('should use cache for subsequent calls', async () => {
+      const mockClient = {
+        getDocuments: vi.fn().mockResolvedValue({
+          docs: [
+            { id: 'abc123', title: 'Meeting A', created_at: '', updated_at: '' },
+            { id: 'def456', title: 'Meeting B', created_at: '', updated_at: '' },
+          ],
+        }),
+      };
+      vi.mocked(getClient).mockResolvedValue(mockClient as never);
+
+      await resolveId('abc');
+      await resolveId('def');
+
+      // Should only fetch once due to caching
+      expect(mockClient.getDocuments).toHaveBeenCalledTimes(1);
+    });
+
+    it('should clear cache when clearMeetingsCache is called', async () => {
+      const mockClient = {
+        getDocuments: vi.fn().mockResolvedValue({
+          docs: [{ id: 'abc123', title: 'Meeting A', created_at: '', updated_at: '' }],
+        }),
+      };
+      vi.mocked(getClient).mockResolvedValue(mockClient as never);
+
+      await resolveId('abc');
+      clearMeetingsCache();
+      await resolveId('abc');
+
+      expect(mockClient.getDocuments).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -588,7 +588,6 @@ DEBUG=granola:cli:* granola meetings
 | ------------------- | ---------------------------- |
 | `granola:cli`       | CLI entry point, startup     |
 | `granola:cli:alias` | Alias expansion              |
-| `granola:cli:subcommand` | External subcommand discovery |
 | `granola:service:*` | All service layer operations |
 | `granola:lib:*`     | All library utilities        |
 | `granola:cmd:*`     | All command handlers         |
@@ -692,7 +691,7 @@ npm install
 
 ### Testing
 
-The project uses [Vitest](https://vitest.dev/) for testing with 100% code coverage.
+The project uses [Vitest](https://vitest.dev/) for testing with high code coverage (95%+ threshold).
 
 ```bash
 # Run tests

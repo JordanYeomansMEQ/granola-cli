@@ -116,41 +116,89 @@ export async function list(opts: ListOptions = {}): Promise<Meeting[]> {
 
 const RESOLVE_PAGE_SIZE = 100;
 const MAX_RESOLVE_PAGES = 100;
+const FULL_UUID_LENGTH = 36;
+const CACHE_TTL_MS = 60000;
+
+interface MeetingsCache {
+  meetings: Meeting[];
+  timestamp: number;
+}
+
+let meetingsCache: MeetingsCache | null = null;
+
+/**
+ * Clears the meetings cache. Useful for testing or forcing a refresh.
+ */
+export function clearMeetingsCache(): void {
+  meetingsCache = null;
+  debug('meetings cache cleared');
+}
+
+/**
+ * Fetches meetings with caching to reduce API calls.
+ * Cache expires after 60 seconds.
+ */
+async function getCachedMeetings(client: GranolaApi): Promise<Meeting[]> {
+  if (meetingsCache && Date.now() - meetingsCache.timestamp < CACHE_TTL_MS) {
+    debug('using cached meetings (%d items)', meetingsCache.meetings.length);
+    return meetingsCache.meetings;
+  }
+
+  debug('cache miss or expired, fetching meetings');
+  const meetings: Meeting[] = [];
+  let offset = 0;
+
+  for (let page = 0; page < MAX_RESOLVE_PAGES; page += 1) {
+    const res = await client.getDocuments({
+      limit: RESOLVE_PAGE_SIZE,
+      offset,
+      include_last_viewed_panel: false,
+    });
+    const docs = (res?.docs || []) as Meeting[];
+    meetings.push(...docs);
+
+    if (docs.length < RESOLVE_PAGE_SIZE) {
+      break;
+    }
+    offset += RESOLVE_PAGE_SIZE;
+  }
+
+  meetingsCache = { meetings, timestamp: Date.now() };
+  debug('cached %d meetings', meetings.length);
+  return meetings;
+}
 
 export async function resolveId(partialId: string): Promise<string | null> {
   return withTokenRefresh(async () => {
-    debug('resolving meeting id: %s', partialId);
+    debug('resolving meeting id: %s (length: %d)', partialId, partialId.length);
     const client = await getClient();
-    const matches = new Set<string>();
-    let offset = 0;
-    for (let page = 0; page < MAX_RESOLVE_PAGES; page += 1) {
-      const res = await client.getDocuments({
-        limit: RESOLVE_PAGE_SIZE,
-        offset,
-        include_last_viewed_panel: false,
-      });
-      const meetings = (res?.docs || []) as Meeting[];
-      debug(
-        'resolveId page %d (offset %d) returned %d meetings',
-        page + 1,
-        offset,
-        meetings.length,
-      );
 
-      for (const meeting of meetings) {
-        if (meeting.id?.startsWith(partialId)) {
-          matches.add(meeting.id);
-          if (matches.size > 1) {
-            debug('ambiguous id: %s matches >1 meetings', partialId);
-            throw new Error(`Ambiguous ID: ${partialId} matches ${matches.size} meetings`);
-          }
+    // Optimization: If partialId looks like a full UUID, try direct lookup first
+    if (partialId.length >= FULL_UUID_LENGTH) {
+      debug('attempting direct lookup for full UUID');
+      try {
+        const metadata = await client.getDocumentMetadata(partialId);
+        if (metadata) {
+          debug('direct lookup successful for: %s', partialId);
+          return partialId;
+        }
+      } catch {
+        debug('direct lookup failed, falling back to search');
+      }
+    }
+
+    // Use cached meetings for prefix search
+    const meetings = await getCachedMeetings(client);
+    const matches = new Set<string>();
+
+    for (const meeting of meetings) {
+      if (meeting.id?.startsWith(partialId)) {
+        matches.add(meeting.id);
+        if (matches.size > 1) {
+          debug('ambiguous id: %s matches >1 meetings', partialId);
+          throw new Error(`Ambiguous ID: ${partialId} matches ${matches.size} meetings`);
         }
       }
-
-      if (meetings.length < RESOLVE_PAGE_SIZE) {
-        break;
-      }
-      offset += RESOLVE_PAGE_SIZE;
     }
 
     if (matches.size === 0) {
