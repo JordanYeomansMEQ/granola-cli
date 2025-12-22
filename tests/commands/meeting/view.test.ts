@@ -53,7 +53,7 @@ describe('meeting view command', () => {
     program.addCommand(createViewCommand());
     await program.parseAsync(['node', 'test', 'view', '--web', 'meeting-id']);
 
-    expect(open).toHaveBeenCalledWith('https://app.granola.ai/meeting/meeting-id');
+    expect(open).toHaveBeenCalledWith('https://notes.granola.ai/d/meeting-id');
   });
 
   it('should output JSON when --output json is set', async () => {

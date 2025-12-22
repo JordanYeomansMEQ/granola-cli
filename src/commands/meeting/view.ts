@@ -38,7 +38,7 @@ export function createViewCommand() {
       }
 
       if (opts.web) {
-        await open(`https://app.granola.ai/meeting/${fullId}`);
+        await open(`https://notes.granola.ai/d/${fullId}`);
         return;
       }
 
