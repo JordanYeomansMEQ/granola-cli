@@ -9,6 +9,7 @@ import { workspaceCommand } from './commands/workspace/index.js';
 import { parseAliasArguments } from './lib/alias.js';
 import { getAlias } from './lib/config.js';
 import { createGranolaDebug } from './lib/debug.js';
+import { handleGlobalError } from './lib/errors.js';
 
 const debug = createGranolaDebug('cli');
 const debugAlias = createGranolaDebug('cli:alias');
@@ -61,4 +62,7 @@ function expandAlias(args: string[]): string[] {
 // Parse with alias expansion
 const expandedArgs = expandAlias(process.argv);
 debug('parsing with args: %O', expandedArgs.slice(2));
-program.parseAsync(expandedArgs);
+program.parseAsync(expandedArgs).catch((error: unknown) => {
+  const exitCode = handleGlobalError(error);
+  process.exit(exitCode);
+});
