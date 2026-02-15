@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { deletePassword, getPassword, setPassword } from 'cross-keychain';
 import type { Credentials } from '../types.js';
 import { createGranolaDebug } from './debug.js';
@@ -12,7 +12,91 @@ const SERVICE_NAME = 'com.granola.cli';
 const ACCOUNT_NAME = 'credentials';
 const DEFAULT_CLIENT_ID = 'client_GranolaMac';
 
+/**
+ * Returns the path to the file-based credential store.
+ * Used as fallback when keychain is unavailable (e.g. headless Linux).
+ */
+function getCredentialsFilePath(): string {
+  const home = homedir();
+  const os = platform();
+  if (os === 'darwin') {
+    return join(home, 'Library', 'Application Support', 'granola-cli', 'credentials.json');
+  }
+  if (os === 'win32') {
+    return join(
+      process.env.APPDATA || join(home, 'AppData', 'Roaming'),
+      'granola-cli',
+      'credentials.json',
+    );
+  }
+  return join(home, '.config', 'granola-cli', 'credentials.json');
+}
+
+/**
+ * Loads credentials from the file-based store.
+ */
+async function loadCredentialsFromStore(): Promise<Credentials | null> {
+  const path = getCredentialsFilePath();
+  debug('loading credentials from file store: %s', path);
+  try {
+    const content = await readFile(path, 'utf-8');
+    const parsed = JSON.parse(content);
+    if (!parsed.refreshToken) return null;
+    debug('credentials loaded from file store');
+    return {
+      refreshToken: parsed.refreshToken,
+      accessToken: parsed.accessToken || '',
+      clientId: parsed.clientId || DEFAULT_CLIENT_ID,
+    };
+  } catch {
+    debug('no credentials in file store');
+    return null;
+  }
+}
+
+/**
+ * Saves credentials to the file-based store.
+ */
+async function saveCredentialsToStore(creds: Credentials): Promise<void> {
+  const path = getCredentialsFilePath();
+  debug('saving credentials to file store: %s', path);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(creds), { mode: 0o600 });
+  debug('credentials saved to file store');
+}
+
+/**
+ * Loads credentials from environment variables.
+ * Requires GRANOLA_REFRESH_TOKEN. GRANOLA_CLIENT_ID is optional (defaults to client_GranolaMac).
+ */
+function getCredentialsFromEnv(): Credentials | null {
+  const refreshToken = process.env.GRANOLA_REFRESH_TOKEN;
+  if (!refreshToken) return null;
+
+  debug('credentials loaded from environment variables');
+  return {
+    refreshToken,
+    accessToken: process.env.GRANOLA_ACCESS_TOKEN || '',
+    clientId: process.env.GRANOLA_CLIENT_ID || DEFAULT_CLIENT_ID,
+  };
+}
+
+/**
+ * Loads credentials using a priority chain:
+ * 1. Environment variables (GRANOLA_REFRESH_TOKEN, GRANOLA_CLIENT_ID)
+ * 2. File-based store (~/.config/granola-cli/credentials.json)
+ * 3. OS keychain (cross-keychain)
+ */
 export async function getCredentials(): Promise<Credentials | null> {
+  // 1. Environment variables (highest priority — headless/container use)
+  const envCreds = getCredentialsFromEnv();
+  if (envCreds) return envCreds;
+
+  // 2. File-based credential store
+  const fileCreds = await loadCredentialsFromStore();
+  if (fileCreds) return fileCreds;
+
+  // 3. OS keychain (original behavior)
   debug('loading credentials from keychain');
   try {
     const stored = await getPassword(SERVICE_NAME, ACCOUNT_NAME);
@@ -22,28 +106,53 @@ export async function getCredentials(): Promise<Credentials | null> {
     }
 
     const parsed = JSON.parse(stored);
-    debug('credentials loaded, hasAccessToken: %s', Boolean(parsed.accessToken));
+    debug('credentials loaded from keychain, hasAccessToken: %s', Boolean(parsed.accessToken));
     return {
       refreshToken: parsed.refreshToken,
       accessToken: parsed.accessToken || '',
       clientId: parsed.clientId,
     };
   } catch (error) {
-    debug('failed to get credentials: %O', error);
+    debug('failed to get credentials from keychain: %O', error);
     return null;
   }
 }
 
+/**
+ * Saves credentials. Tries keychain first, falls back to file store.
+ */
 export async function saveCredentials(creds: Credentials): Promise<void> {
-  debug('saving credentials to keychain');
-  await setPassword(SERVICE_NAME, ACCOUNT_NAME, JSON.stringify(creds));
-  debug('credentials saved');
+  // Always save to file store (reliable on all platforms)
+  await saveCredentialsToStore(creds);
+
+  // Also try keychain (may fail on headless Linux — that's OK)
+  try {
+    debug('saving credentials to keychain');
+    await setPassword(SERVICE_NAME, ACCOUNT_NAME, JSON.stringify(creds));
+    debug('credentials saved to keychain');
+  } catch (error) {
+    debug('keychain save failed (headless?), file store used: %O', error);
+  }
 }
 
 export async function deleteCredentials(): Promise<void> {
-  debug('deleting credentials from keychain');
-  await deletePassword(SERVICE_NAME, ACCOUNT_NAME);
-  debug('credentials deleted');
+  // Delete from file store
+  try {
+    const { unlink } = await import('node:fs/promises');
+    await unlink(getCredentialsFilePath());
+    debug('credentials deleted from file store');
+  } catch {
+    debug('no file store credentials to delete');
+  }
+
+  // Delete from keychain
+  try {
+    debug('deleting credentials from keychain');
+    await deletePassword(SERVICE_NAME, ACCOUNT_NAME);
+    debug('credentials deleted from keychain');
+  } catch (error) {
+    debug('keychain delete failed: %O', error);
+  }
 }
 
 const WORKOS_AUTH_URL = 'https://api.workos.com/user_management/authenticate';

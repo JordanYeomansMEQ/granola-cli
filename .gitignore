@@ -250,3 +250,13 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+# Vagrant
+vagrant/.vagrant/
+*.vmdk
+*.nvram
+*.vmx
+*.vmxf
+*.vmsd
+*.plist
+*.scoreboard

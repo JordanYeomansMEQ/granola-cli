@@ -17,6 +17,9 @@ vi.mock('node:os', () => ({
 // Mock node:fs/promises for file-based credential tests
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
+  writeFile: vi.fn(),
+  mkdir: vi.fn(),
+  unlink: vi.fn(),
 }));
 
 // Mock lock module to avoid file system operations in tests
@@ -43,10 +46,84 @@ import { withLock } from '../../src/lib/lock.js';
 describe('auth', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Clear env vars between tests
+    delete process.env.GRANOLA_REFRESH_TOKEN;
+    delete process.env.GRANOLA_ACCESS_TOKEN;
+    delete process.env.GRANOLA_CLIENT_ID;
+    // Default: file store returns nothing (ENOENT)
+    vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
   });
 
   describe('getCredentials', () => {
-    it('should return credentials when stored', async () => {
+    it('should return credentials from env vars (highest priority)', async () => {
+      process.env.GRANOLA_REFRESH_TOKEN = 'env-refresh-token';
+      process.env.GRANOLA_CLIENT_ID = 'env-client-id';
+
+      const result = await getCredentials();
+
+      expect(result).toEqual({
+        refreshToken: 'env-refresh-token',
+        accessToken: '',
+        clientId: 'env-client-id',
+      });
+      // Should not hit keychain
+      expect(crossKeychain.getPassword).not.toHaveBeenCalled();
+    });
+
+    it('should return env credentials with default client ID', async () => {
+      process.env.GRANOLA_REFRESH_TOKEN = 'env-refresh-token';
+
+      const result = await getCredentials();
+
+      expect(result).toEqual({
+        refreshToken: 'env-refresh-token',
+        accessToken: '',
+        clientId: 'client_GranolaMac',
+      });
+    });
+
+    it('should include GRANOLA_ACCESS_TOKEN from env when set', async () => {
+      process.env.GRANOLA_REFRESH_TOKEN = 'env-refresh-token';
+      process.env.GRANOLA_ACCESS_TOKEN = 'env-access-token';
+
+      const result = await getCredentials();
+
+      expect(result).toEqual({
+        refreshToken: 'env-refresh-token',
+        accessToken: 'env-access-token',
+        clientId: 'client_GranolaMac',
+      });
+    });
+
+    it('should return credentials from file store (second priority)', async () => {
+      // readFile is called twice: once for file store, once could be for supabase
+      // We need to mock based on path. The file store path for linux is:
+      // /home/testuser/.config/granola-cli/credentials.json
+      const storeCreds = JSON.stringify({
+        refreshToken: 'file-refresh-token',
+        accessToken: 'file-access-token',
+        clientId: 'file-client-id',
+      });
+      vi.mocked(fs.readFile).mockImplementation(async (path: any) => {
+        if (String(path).includes('granola-cli/credentials.json')) {
+          return storeCreds;
+        }
+        throw new Error('ENOENT');
+      });
+
+      const result = await getCredentials();
+
+      expect(result).toEqual({
+        refreshToken: 'file-refresh-token',
+        accessToken: 'file-access-token',
+        clientId: 'file-client-id',
+      });
+      expect(crossKeychain.getPassword).not.toHaveBeenCalled();
+    });
+
+    it('should return credentials from keychain (third priority)', async () => {
       const storedCreds = JSON.stringify({
         refreshToken: 'test-refresh-token',
         accessToken: 'test-access-token',
@@ -65,7 +142,7 @@ describe('auth', () => {
       });
     });
 
-    it('should return null when no credentials stored', async () => {
+    it('should return null when no credentials stored anywhere', async () => {
       vi.mocked(crossKeychain.getPassword).mockResolvedValue(null);
 
       const result = await getCredentials();
@@ -73,7 +150,7 @@ describe('auth', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null on error', async () => {
+    it('should return null on keychain error', async () => {
       vi.mocked(crossKeychain.getPassword).mockRejectedValue(new Error('Keychain error'));
 
       const result = await getCredentials();
@@ -81,7 +158,7 @@ describe('auth', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null for invalid JSON', async () => {
+    it('should return null for invalid JSON in keychain', async () => {
       vi.mocked(crossKeychain.getPassword).mockResolvedValue('not-valid-json');
 
       const result = await getCredentials();
@@ -89,7 +166,7 @@ describe('auth', () => {
       expect(result).toBeNull();
     });
 
-    it('should handle credentials without accessToken', async () => {
+    it('should handle credentials without accessToken from keychain', async () => {
       const storedCreds = JSON.stringify({
         refreshToken: 'test-refresh-token',
         clientId: 'test-client-id',
@@ -108,7 +185,7 @@ describe('auth', () => {
   });
 
   describe('saveCredentials', () => {
-    it('should save credentials to keychain', async () => {
+    it('should save to both file store and keychain', async () => {
       vi.mocked(crossKeychain.setPassword).mockResolvedValue(undefined);
 
       const creds: Credentials = {
@@ -119,6 +196,15 @@ describe('auth', () => {
 
       await saveCredentials(creds);
 
+      // File store
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(fs.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('granola-cli/credentials.json'),
+        JSON.stringify(creds),
+        { mode: 0o600 },
+      );
+
+      // Keychain
       expect(crossKeychain.setPassword).toHaveBeenCalledWith(
         'com.granola.cli',
         'credentials',
@@ -126,7 +212,7 @@ describe('auth', () => {
       );
     });
 
-    it('should throw on keychain error', async () => {
+    it('should succeed even if keychain fails (headless Linux)', async () => {
       vi.mocked(crossKeychain.setPassword).mockRejectedValue(new Error('Keychain error'));
 
       const creds: Credentials = {
@@ -135,12 +221,15 @@ describe('auth', () => {
         clientId: 'client',
       };
 
-      await expect(saveCredentials(creds)).rejects.toThrow('Keychain error');
+      // Should not throw — file store is the reliable fallback
+      await expect(saveCredentials(creds)).resolves.toBeUndefined();
+      expect(fs.writeFile).toHaveBeenCalled();
     });
   });
 
   describe('deleteCredentials', () => {
-    it('should delete credentials from keychain', async () => {
+    it('should delete from both file store and keychain', async () => {
+      vi.mocked(fs.unlink).mockResolvedValue(undefined);
       vi.mocked(crossKeychain.deletePassword).mockResolvedValue(undefined);
 
       await deleteCredentials();
@@ -148,8 +237,9 @@ describe('auth', () => {
       expect(crossKeychain.deletePassword).toHaveBeenCalledWith('com.granola.cli', 'credentials');
     });
 
-    it('should not throw if credentials do not exist', async () => {
-      vi.mocked(crossKeychain.deletePassword).mockResolvedValue(undefined);
+    it('should not throw if neither store has credentials', async () => {
+      vi.mocked(fs.unlink).mockRejectedValue(new Error('ENOENT'));
+      vi.mocked(crossKeychain.deletePassword).mockRejectedValue(new Error('Not found'));
 
       await expect(deleteCredentials()).resolves.toBeUndefined();
     });
@@ -416,6 +506,7 @@ describe('auth', () => {
     });
 
     it('should refresh token and save new credentials', async () => {
+      // No env vars, no file store — use keychain
       const storedCreds = JSON.stringify({
         refreshToken: 'old-refresh-token',
         accessToken: 'old-access-token',
@@ -454,15 +545,8 @@ describe('auth', () => {
         clientId: 'test-client-id',
       });
 
-      expect(crossKeychain.setPassword).toHaveBeenCalledWith(
-        'com.granola.cli',
-        'credentials',
-        JSON.stringify({
-          refreshToken: 'new-refresh-token',
-          accessToken: 'new-access-token',
-          clientId: 'test-client-id',
-        }),
-      );
+      // Should save to file store
+      expect(fs.writeFile).toHaveBeenCalled();
     });
 
     it('should return null when no credentials stored', async () => {
@@ -566,6 +650,44 @@ describe('auth', () => {
       const result = await refreshAccessToken();
 
       expect(result).toBeNull();
+    });
+
+    it('should use env var credentials for refresh when available', async () => {
+      process.env.GRANOLA_REFRESH_TOKEN = 'env-refresh-token';
+      process.env.GRANOLA_CLIENT_ID = 'env-client-id';
+
+      vi.mocked(crossKeychain.setPassword).mockResolvedValue(undefined);
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            access_token: 'new-access-token',
+            refresh_token: 'new-refresh-token',
+          }),
+      });
+
+      const result = await refreshAccessToken();
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.workos.com/user_management/authenticate',
+        expect.objectContaining({
+          body: JSON.stringify({
+            client_id: 'env-client-id',
+            grant_type: 'refresh_token',
+            refresh_token: 'env-refresh-token',
+          }),
+        }),
+      );
+
+      expect(result).toEqual({
+        refreshToken: 'new-refresh-token',
+        accessToken: 'new-access-token',
+        clientId: 'env-client-id',
+      });
+
+      // Keychain should NOT have been read
+      expect(crossKeychain.getPassword).not.toHaveBeenCalled();
     });
   });
 });
